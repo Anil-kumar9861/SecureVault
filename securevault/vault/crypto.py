@@ -2,7 +2,9 @@ import secrets
 import unicodedata
 from dataclasses import dataclass
 
+from argon2.exceptions import HashingError
 from argon2.low_level import Type, hash_secret_raw
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from securevault.exceptions import CryptoError, DecryptionError
@@ -10,9 +12,9 @@ from securevault.exceptions import CryptoError, DecryptionError
 
 @dataclass(frozen=True)
 class KdfParams:
-    time_cost: int = 1
-    memory_kib: int = 8192
-    parallelism: int = 1
+    time_cost: int = 3
+    memory_kib: int = 65536
+    parallelism: int = 4
 
     def __post_init__(self):
 
@@ -23,7 +25,7 @@ class KdfParams:
                 raise CryptoError("KDF parameters must be positive integers")
 
         if self.memory_kib < 8 * self.parallelism:
-            raise CryptoError("Insufficent memory for Argon2")
+            raise CryptoError("Insufficient memory for Argon2")
 
 
 def generate_salt() -> bytes:
@@ -55,7 +57,7 @@ def derive_key(password: str, salt: bytes, params: KdfParams = KdfParams()) -> b
 
         return key
 
-    except Exception as exc:
+    except HashingError as exc:
         raise CryptoError("Key derivation failed") from exc
 
 
@@ -73,17 +75,12 @@ def encrypt(key: bytes, plaintext: bytes, aad: bytes = b"") -> tuple[bytes, byte
     return nonce, ciphertext
 
 
-def decrypt(key: bytes, nonce: bytes, ciphertext: bytes, aad: bytes = b"") -> bytes:
-
+def decrypt(key, nonce, ciphertext, aad=b""):
     if not isinstance(key, bytes) or len(key) != 32:
         raise CryptoError("Decryption key must be exactly 32 bytes")
-
+    if not isinstance(nonce, bytes) or len(nonce) != 12:
+        raise CryptoError("Nonce must be exactly 12 bytes")
     try:
-        aes = AESGCM(key)
-
-        plaintext = aes.decrypt(nonce, ciphertext, aad)
-
-        return plaintext
-
-    except Exception as exc:
+        return AESGCM(key).decrypt(nonce, ciphertext, aad)
+    except InvalidTag as exc:
         raise DecryptionError("Decryption failed") from exc
