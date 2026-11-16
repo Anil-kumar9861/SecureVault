@@ -8,3 +8,15 @@ class CryptoError(VaultError):
 
 class DecryptionError(CryptoError):
     """Raised when decryption or authentication fails."""
+
+
+class WeakPasswordError(VaultError):
+    """Raised when the master password does not meet security requirements."""
+
+
+class WrongMasterPasswordError(VaultError):
+    """Raised when the master password is incorrect."""
+
+
+class VaultLockedError(VaultError):
+    """Raised when an operation is attempted on a locked vault."""
