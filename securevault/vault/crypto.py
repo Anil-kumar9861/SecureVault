@@ -27,6 +27,9 @@ class KdfParams:
         if self.memory_kib < 8 * self.parallelism:
             raise CryptoError("Insufficient memory for Argon2")
 
+        if self.time_cost > 10 or self.memory_kib > 1_048_576 or self.parallelism > 16:
+            raise CryptoError("KDF parameters out of allowed range")
+
 
 def generate_salt() -> bytes:
     return secrets.token_bytes(16)

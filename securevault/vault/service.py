@@ -4,6 +4,7 @@ import unicodedata
 from dataclasses import dataclass
 
 from securevault.exceptions import (
+    DecryptionError,
     VaultLockedError,
     WeakPasswordError,
     WrongMasterPasswordError,
@@ -49,7 +50,7 @@ class Vault:
         self._key = key
 
     @classmethod
-    def create(cls, master_password: str, params: KdfParams = KdfParams()):
+    def create(cls, master_password: str, params: KdfParams = KdfParams()) -> "Vault":
 
         validate_master_password(master_password)
 
@@ -66,7 +67,7 @@ class Vault:
         return cls(meta, key)
 
     @classmethod
-    def unlock(cls, meta: VaultMeta, master_password: str):
+    def unlock(cls, meta: VaultMeta, master_password: str) -> "Vault":
 
         if not isinstance(master_password, str) or not master_password.strip():
             raise WrongMasterPasswordError("Wrong master password")
@@ -75,7 +76,7 @@ class Vault:
 
         try:
             plaintext = decrypt(key, meta.check_nonce, meta.check_blob, CHECK_AAD)
-        except Exception as exc:
+        except DecryptionError as exc:
             raise WrongMasterPasswordError("Wrong master password") from exc
 
         if not hmac.compare_digest(plaintext, CHECK_PLAINTEXT):
@@ -83,7 +84,7 @@ class Vault:
 
         return cls(meta, key)
 
-    def encrypt_record(self, record: dict, aad: bytes = b"") -> tuple[bytes, bytes]:
+    def encrypt_record(self, record: dict, aad: bytes) -> tuple[bytes, bytes]:
         if self._key is None:
             raise VaultLockedError("Vault is locked")
 
@@ -93,7 +94,7 @@ class Vault:
 
         return nonce, ciphertext
 
-    def decrypt_record(self, nonce: bytes, ciphertext: bytes, aad: bytes = b"") -> dict:
+    def decrypt_record(self, nonce: bytes, ciphertext: bytes, aad: bytes) -> dict:
         if self._key is None:
             raise VaultLockedError("Vault is locked")
 
