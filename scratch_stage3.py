@@ -16,7 +16,7 @@ def outcome(func, *args, **kwargs):
 
 db = Storage("securevault_test")
 db.reset_schema()
-db.init_schema()
+
 
 print(outcome(db.load_vault_meta))
 
@@ -30,17 +30,25 @@ unlocked = Vault.unlock(meta, "correct horse battery")
 print(repr(unlocked))
 print(outcome(Vault.unlock, meta, "wrong password!!"))
 
-n1, c1 = unlocked.encrypt_record({"username": "ravi", "password": "s3cret!"}, b"x")
-id1 = db.add_credential("github", "personal", n1, c1)
-n2, c2 = unlocked.encrypt_record({"username": "work", "password": "pw2"}, b"x")
-id2 = db.add_credential("github", "work", n2, c2)
-n3, c3 = unlocked.encrypt_record({"username": "me", "password": "pw3"}, b"x")
-id3 = db.add_credential("Gmail", "", n3, c3)
+
+def add(service, label, record):
+    cred_id = db.reserve_credential_id()
+    nonce, ct = unlocked.encrypt_record(record, str(cred_id).encode())
+    db.add_credential(cred_id, service, label, nonce, ct)
+    return cred_id
+
+
+id1 = add("github", "personal", {"username": "ravi", "password": "s3cret!"})
+id2 = add("github", "work", {"username": "work", "password": "pw2"})
+id3 = add("Gmail", "", {"username": "me", "password": "pw3"})
 print(id1, id2, id3)
 
 row = db.get_credential(id1)
 print(sorted(row))
-print(unlocked.decrypt_record(row["nonce"], row["ciphertext"], b"x"))
+print(unlocked.decrypt_record(row["nonce"], row["ciphertext"], str(id1).encode()))
+print(
+    outcome(unlocked.decrypt_record, row["nonce"], row["ciphertext"], str(id2).encode())
+)
 print(outcome(db.get_credential, 999))
 
 print([(r["id"], r["service"], r["label"]) for r in db.list_credentials()])
@@ -48,12 +56,18 @@ print([r["id"] for r in db.search_credentials("GIT")])
 print([r["id"] for r in db.search_credentials("work")])
 print(db.search_credentials("%"))
 
-n4, c4 = unlocked.encrypt_record({"username": "ravi2", "password": "new"}, b"x")
-db.update_credential(id1, n4, c4, label="home")
+n4, c4 = unlocked.encrypt_record(
+    {"username": "ravi2", "password": "new"}, str(id1).encode()
+)
+db.update_credential(id1, "github", "home", n4, c4)
 row = db.get_credential(id1)
 print(row["label"], row["updated_at"] >= row["created_at"])
-print(unlocked.decrypt_record(row["nonce"], row["ciphertext"], b"x")["username"])
-print(outcome(db.update_credential, 999, n4, c4))
+print(
+    unlocked.decrypt_record(row["nonce"], row["ciphertext"], str(id1).encode())[
+        "username"
+    ]
+)
+print(outcome(db.update_credential, 999, "github", "", n4, c4))
 
 db.delete_credential(id2)
 print(outcome(db.delete_credential, id2))
@@ -61,10 +75,11 @@ print(len(db.list_credentials()))
 
 db.log_event("test_event", "hello")
 print([e["event"] for e in db.list_events()])
+print([e["event"] for e in db.list_events(2)])
 print("s3cret!" in str(db.list_credentials()), "s3cret!" in str(db.list_events()))
 
 try:
-    db.add_credential("x", "", b"n", None)
+    db.add_credential(db.reserve_credential_id(), "x", "", b"n", None)
 except StorageError as err:
     print(err, type(err.__cause__).__name__)
 
@@ -76,4 +91,9 @@ except StorageError as err:
 print(outcome(Storage("securevault").reset_schema))
 print(outcome(KdfParams, 3, 2_000_000, 4))
 print(outcome(KdfParams, 11, 65536, 4))
+
+with db._connect() as conn:
+    conn.execute("UPDATE vault_meta SET memory_kib = 2000000")
+print(outcome(db.load_vault_meta))
+
 print(issubclass(StorageError, VaultError))

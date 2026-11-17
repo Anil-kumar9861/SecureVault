@@ -180,9 +180,6 @@ class Storage:
                 return row["id"]
 
         except psycopg.Error as exc:
-            raise StorageError("Failed to add credential") from exc
-
-        except psycopg.Error as exc:
             raise StorageError("Database error") from exc
 
     def get_credential(self, cred_id: int) -> dict:
@@ -318,15 +315,22 @@ class Storage:
         except psycopg.Error as exc:
             raise StorageError("Database error") from exc
 
-    def list_events(self, limit: int = 50) -> list[dict]:
+    def list_events(self, limit: int = 50) -> list:
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            raise ValueError("Limit must be a positive integer")
+
         try:
             with self._connect() as conn:
                 rows = conn.execute(
                     """
                     SELECT id, at, event, detail
-                    FROM audit_log
+                    FROM (
+                        SELECT id, at, event, detail
+                        FROM audit_log
+                        ORDER BY id DESC
+                        LIMIT %s
+                    ) AS recent
                     ORDER BY id ASC
-                    LIMIT %s
                     """,
                     (limit,),
                 ).fetchall()
@@ -348,7 +352,7 @@ class Storage:
                     return cur.fetchone()["id"]
 
         except psycopg.Error as exc:
-            raise StorageError("Failed to reserve credential ID") from exc
+            raise StorageError("Database error") from exc
 
     def sync_credential_sequence(self) -> None:
         try:
