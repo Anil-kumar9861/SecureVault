@@ -1,0 +1,20 @@
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "securevault"
+version = "0.1.0"
+description = "An encrypted password vault and file integrity auditor"
+requires-python = ">=3.10"
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+include = ["securevault*"]
+
+[project.scripts]
+sv = "securevault.cli:app"
