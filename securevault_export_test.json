@@ -1,0 +1,12 @@
+{
+    "version": 1,
+    "kdf": "argon2id",
+    "kdf_params": {
+        "time_cost": 3,
+        "memory_kib": 65536,
+        "parallelism": 4
+    },
+    "salt": "lNv2RCvdsG3cbtnmr78zBg==",
+    "nonce": "tLtkhbbMZMkUoXti",
+    "ciphertext": "54rUZHbeSV720n/xZsxV0pSrABVF09s7TyCjGXHc0WQnPqHlR+AFaz9waLSuY2PO8Sk4XAKAsTEjbNk2i5N/X8SaT0Wa+TP3qNW1cD+OkWxjtEfOkSH4NyfzvBGJ6wu3tJLKsn/Dce1w1hH28DND7ZwxWDRj3ELGdsj/Qhnt/OSM4znkSAt363fKHmUA1hY0BBCIlrAaYOMsgD+TJ8McXlmwykBsIuaC+cmVAXSaNIApghlODxtohmpp0yzH1kW5gwDf7lhtabXny/UB6M+FS5QqlA3qv5zPFJP+lLpBCbv4OTI9D+yIpQ1zqm/30hiJTPprH2bh2IZX"
+}

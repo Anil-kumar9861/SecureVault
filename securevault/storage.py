@@ -182,6 +182,53 @@ class Storage:
         except psycopg.Error as exc:
             raise StorageError("Database error") from exc
 
+    def import_credentials_transaction(self, credentials: list[dict]) -> int:
+        """Insert multiple encrypted credentials in one transaction."""
+
+        if not credentials:
+            return 0
+
+        try:
+            with self._connect() as conn:
+                # Insert all credentials in one transaction.
+                for item in credentials:
+                    conn.execute(
+                        """
+                        INSERT INTO credentials (
+                            id,
+                            service,
+                            label,
+                            nonce,
+                            ciphertext
+                        )
+                        VALUES (%s, %s, %s, %s, %s)
+                        """,
+                        (
+                            item["id"],
+                            item["service"],
+                            item["label"],
+                            item["nonce"],
+                            item["ciphertext"],
+                        ),
+                    )
+
+                # Record the import without storing sensitive information.
+                conn.execute(
+                    """
+                    INSERT INTO audit_log (event, detail)
+                    VALUES (%s, %s)
+                    """,
+                    (
+                        "credentials_imported",
+                        f"count={len(credentials)}",
+                    ),
+                )
+
+            return len(credentials)
+
+        except psycopg.Error as exc:
+            raise StorageError("Failed to import credentials") from exc
+
     def get_credential(self, cred_id: int) -> dict:
         try:
             with self._connect() as conn:
@@ -373,3 +420,69 @@ class Storage:
 
         except psycopg.Error as exc:
             raise StorageError("Failed to synchronize credential sequence") from exc
+
+    def change_master_transaction(self, updates, meta: VaultMeta) -> None:
+        """Atomically update encrypted credentials and vault metadata."""
+
+        try:
+            with self._connect() as conn:
+                # Update every encrypted credential.
+                for item in updates:
+                    row = conn.execute(
+                        """
+                        UPDATE credentials
+                        SET nonce = %s,
+                            ciphertext = %s,
+                            updated_at = now()
+                        WHERE id = %s
+                        RETURNING id
+                        """,
+                        (
+                            item["nonce"],
+                            item["ciphertext"],
+                            item["id"],
+                        ),
+                    ).fetchone()
+
+                    if row is None:
+                        raise StorageError(f"Credential {item['id']} not found")
+
+                # Update the vault metadata.
+                row = conn.execute(
+                    """
+                    UPDATE vault_meta
+                    SET kdf = %s,
+                        salt = %s,
+                        time_cost = %s,
+                        memory_kib = %s,
+                        parallelism = %s,
+                        check_nonce = %s,
+                        check_blob = %s
+                    WHERE id = 1
+                    RETURNING id
+                    """,
+                    (
+                        "argon2id",
+                        meta.salt,
+                        meta.params.time_cost,
+                        meta.params.memory_kib,
+                        meta.params.parallelism,
+                        meta.check_nonce,
+                        meta.check_blob,
+                    ),
+                ).fetchone()
+
+                if row is None:
+                    raise VaultNotInitializedError("Vault metadata not found")
+
+                # Record the successful operation.
+                conn.execute(
+                    """
+                    INSERT INTO audit_log (event, detail)
+                    VALUES (%s, %s)
+                    """,
+                    ("master_password_changed", f"credentials={len(updates)}"),
+                )
+
+        except psycopg.Error as exc:
+            raise StorageError("Failed to change master password") from exc

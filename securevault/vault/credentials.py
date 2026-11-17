@@ -3,6 +3,7 @@ from securevault.exceptions import (
     CredentialNotFoundError,
     InvalidInputError,
 )
+from securevault.vault.service import Vault
 
 
 class CredentialManager:
@@ -93,6 +94,94 @@ class CredentialManager:
             )
 
         return results
+
+    def import_backup_credentials(self, credentials: list[dict]) -> dict:
+        """Import backup credentials while skipping duplicates."""
+
+        # Get existing credentials.
+        existing = self.list_all()
+
+        # Build a set of existing service and username combinations.
+        existing_keys = {
+            (
+                item["service"].strip().casefold(),
+                item["username"].strip().casefold(),
+            )
+            for item in existing
+        }
+
+        prepared = []
+        skipped = 0
+
+        for item in credentials:
+            if not isinstance(item, dict):
+                raise InvalidInputError("Invalid credential in backup")
+
+            service = item.get("service")
+            username = item.get("username")
+            password = item.get("password")
+
+            if not isinstance(service, str) or not service.strip():
+                raise InvalidInputError("Invalid service in backup")
+
+            if not isinstance(username, str):
+                raise InvalidInputError("Invalid username in backup")
+
+            if not isinstance(password, str) or not password:
+                raise InvalidInputError("Invalid password in backup")
+
+            service = service.strip()
+
+            key = (
+                service.casefold(),
+                username.strip().casefold(),
+            )
+
+            # Skip existing credentials and duplicates within the backup.
+            if key in existing_keys:
+                skipped += 1
+                continue
+
+            label = item.get("label", "")
+            url = item.get("url", "")
+            notes = item.get("notes", "")
+
+            if not all(isinstance(value, str) for value in (label, url, notes)):
+                raise InvalidInputError("Invalid credential data in backup")
+
+            # Generate a new destination database ID.
+            cred_id = self.storage.reserve_credential_id()
+
+            record = {
+                "username": username,
+                "password": password,
+                "url": url,
+                "notes": notes,
+            }
+
+            # Encrypt using the destination vault's master key.
+            aad = str(cred_id).encode()
+            nonce, ciphertext = self.vault.encrypt_record(record, aad)
+
+            prepared.append(
+                {
+                    "id": cred_id,
+                    "service": service,
+                    "label": label,
+                    "nonce": nonce,
+                    "ciphertext": ciphertext,
+                }
+            )
+
+            existing_keys.add(key)
+
+        # Insert all prepared credentials in one transaction.
+        imported = self.storage.import_credentials_transaction(prepared)
+
+        return {
+            "imported": imported,
+            "skipped": skipped,
+        }
 
     def search(self, text: str) -> list[dict]:
         rows = self.storage.search_credentials(text)
@@ -189,3 +278,53 @@ class CredentialManager:
 
     def delete(self, cred_id: int) -> None:
         self.storage.delete_credential(cred_id)
+
+    def change_master_password(self, new_master_password: str) -> None:
+        """Re-encrypt all credentials using a new master password."""
+
+        # Create a new vault with a fresh salt and encryption key.
+        new_vault = Vault.create(
+            new_master_password,
+            params=self.vault.meta.params,
+        )
+
+        updates = []
+
+        # Read all existing credentials.
+        rows = self.storage.list_credentials()
+
+        for row in rows:
+            cred_id = row["id"]
+
+            # Retrieve the encrypted credential.
+            encrypted_row = self.storage.get_credential(cred_id)
+
+            # Use the credential ID as Additional Authenticated Data.
+            aad = str(cred_id).encode()
+
+            # Decrypt using the old vault.
+            record = self.vault.decrypt_record(
+                encrypted_row["nonce"],
+                encrypted_row["ciphertext"],
+                aad,
+            )
+
+            # Encrypt using the new vault.
+            nonce, ciphertext = new_vault.encrypt_record(record, aad)
+
+            updates.append(
+                {
+                    "id": cred_id,
+                    "nonce": nonce,
+                    "ciphertext": ciphertext,
+                }
+            )
+
+        # Update all credentials and metadata atomically.
+        self.storage.change_master_transaction(
+            updates,
+            new_vault.export_meta(),
+        )
+
+        # Replace the current vault only after the database update succeeds.
+        self.vault = new_vault
