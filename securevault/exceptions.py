@@ -43,3 +43,15 @@ class VaultAlreadyExistsError(VaultError):
 
 class CredentialNotFoundError(VaultError):
     """Raised when a requested credential does not exist."""
+
+
+class InvalidInputError(VaultError):
+    """Raised when user input is invalid."""
+
+
+class AmbiguousCredentialError(VaultError):
+    """Raised when multiple credentials match an identifier."""
+
+    def __init__(self, message, matches=None):
+        super().__init__(message)
+        self.matches = matches or []

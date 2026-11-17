@@ -84,6 +84,10 @@ class Vault:
 
         return cls(meta, key)
 
+    def export_meta(self) -> VaultMeta:
+        """Return the vault metadata for database storage."""
+        return self.meta
+
     def encrypt_record(self, record: dict, aad: bytes) -> tuple[bytes, bytes]:
         if self._key is None:
             raise VaultLockedError("Vault is locked")
