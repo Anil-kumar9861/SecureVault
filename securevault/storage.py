@@ -45,301 +45,327 @@ class Storage:
         except OSError as exc:
             raise StorageError("Could not read schema file") from exc
 
+    def reset_schema(self):
+        settings = get_db_settings(self.dbname)
+        database_name = settings["dbname"]
 
-def reset_schema(self):
-    settings = get_db_settings(self.dbname)
-    database_name = settings["dbname"]
+        if not database_name.endswith("_test"):
+            raise StorageError("reset_schema is only allowed on test databases")
 
-    if not database_name.endswith("_test"):
-        raise StorageError("reset_schema is only allowed on test databases")
+        try:
+            with self._connect() as conn:
+                conn.execute("""
+                    DROP TABLE IF EXISTS credentials CASCADE;
+                    DROP TABLE IF EXISTS vault_meta CASCADE;
+                    DROP TABLE IF EXISTS audit_log CASCADE;
+                """)
 
-    try:
-        with self._connect() as conn:
-            conn.execute("""
-                DROP TABLE IF EXISTS credentials CASCADE;
-                DROP TABLE IF EXISTS vault_meta CASCADE;
-                DROP TABLE IF EXISTS audit_log CASCADE;
-            """)
+            self.init_schema()
 
-        self.init_schema()
+        except psycopg.Error as exc:
+            raise StorageError("Database error") from exc
 
-    except psycopg.Error as exc:
-        raise StorageError("Database error") from exc
-
-
-def save_vault_meta(self, meta: VaultMeta):
-    try:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO vault_meta (
-                    id,
-                    kdf,
-                    salt,
-                    time_cost,
-                    memory_kib,
-                    parallelism,
-                    check_nonce,
-                    check_blob
+    def save_vault_meta(self, meta: VaultMeta):
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO vault_meta (
+                        id,
+                        kdf,
+                        salt,
+                        time_cost,
+                        memory_kib,
+                        parallelism,
+                        check_nonce,
+                        check_blob
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        1,
+                        "argon2id",
+                        meta.salt,
+                        meta.params.time_cost,
+                        meta.params.memory_kib,
+                        meta.params.parallelism,
+                        meta.check_nonce,
+                        meta.check_blob,
+                    ),
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    1,
-                    "argon2id",
-                    meta.salt,
-                    meta.params.time_cost,
-                    meta.params.memory_kib,
-                    meta.params.parallelism,
-                    meta.check_nonce,
-                    meta.check_blob,
-                ),
-            )
 
-            conn.execute(
-                """
-                INSERT INTO audit_log (event, detail)
-                VALUES (%s, %s)
-                """,
-                ("vault_created", ""),
-            )
-
-    except psycopg.errors.UniqueViolation as exc:
-        raise VaultAlreadyExistsError("Vault already exists") from exc
-
-    except psycopg.Error as exc:
-        raise StorageError("Database error") from exc
-
-
-def load_vault_meta(self) -> VaultMeta:
-    try:
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT
-                    salt,
-                    time_cost,
-                    memory_kib,
-                    parallelism,
-                    check_nonce,
-                    check_blob
-                FROM vault_meta
-                WHERE id = 1
-                """
-            ).fetchone()
-
-            if row is None:
-                raise VaultNotInitializedError("Vault is not initialized")
-
-            params = KdfParams(
-                time_cost=row["time_cost"],
-                memory_kib=row["memory_kib"],
-                parallelism=row["parallelism"],
-            )
-
-            return VaultMeta(
-                salt=row["salt"],
-                params=params,
-                check_nonce=row["check_nonce"],
-                check_blob=row["check_blob"],
-            )
-
-    except psycopg.Error as exc:
-        raise StorageError("Database error") from exc
-
-
-def add_credential(
-    self,
-    service: str,
-    label: str,
-    nonce: bytes,
-    ciphertext: bytes,
-) -> int:
-    try:
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                INSERT INTO credentials (
-                    service,
-                    label,
-                    nonce,
-                    ciphertext
+                conn.execute(
+                    """
+                    INSERT INTO audit_log (event, detail)
+                    VALUES (%s, %s)
+                    """,
+                    ("vault_created", ""),
                 )
-                VALUES (%s, %s, %s, %s)
-                RETURNING id
-                """,
-                (service, label, nonce, ciphertext),
-            ).fetchone()
 
-            cred_id = row["id"]
+        except psycopg.errors.UniqueViolation as exc:
+            raise VaultAlreadyExistsError("Vault already exists") from exc
 
-            conn.execute(
-                """
-                INSERT INTO audit_log (event, detail)
-                VALUES (%s, %s)
-                """,
-                ("credential_added", f"id={cred_id}"),
-            )
+        except psycopg.Error as exc:
+            raise StorageError("Database error") from exc
 
-            return cred_id
+    def load_vault_meta(self) -> VaultMeta:
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT
+                        salt,
+                        time_cost,
+                        memory_kib,
+                        parallelism,
+                        check_nonce,
+                        check_blob
+                    FROM vault_meta
+                    WHERE id = 1
+                    """
+                ).fetchone()
 
-    except psycopg.Error as exc:
-        raise StorageError("Database error") from exc
+                if row is None:
+                    raise VaultNotInitializedError("Vault is not initialized")
 
+                params = KdfParams(
+                    time_cost=row["time_cost"],
+                    memory_kib=row["memory_kib"],
+                    parallelism=row["parallelism"],
+                )
 
-def get_credential(self, cred_id: int) -> dict:
-    try:
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT *
-                FROM credentials
-                WHERE id = %s
-                """,
-                (cred_id,),
-            ).fetchone()
+                return VaultMeta(
+                    salt=row["salt"],
+                    params=params,
+                    check_nonce=row["check_nonce"],
+                    check_blob=row["check_blob"],
+                )
 
-            if row is None:
-                raise CredentialNotFoundError(f"Credential {cred_id} not found")
+        except psycopg.Error as exc:
+            raise StorageError("Database error") from exc
 
-            return row
+    def add_credential(
+        self,
+        cred_id: int,
+        service: str,
+        label: str,
+        nonce: bytes,
+        ciphertext: bytes,
+    ) -> int:
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    INSERT INTO credentials (
+                        id,
+                        service,
+                        label,
+                        nonce,
+                        ciphertext
+                    )
+                    VALUES (%s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (cred_id, service, label, nonce, ciphertext),
+                ).fetchone()
 
-    except psycopg.Error as exc:
-        raise StorageError("Database error") from exc
+                conn.execute(
+                    """
+                    INSERT INTO audit_log (event, detail)
+                    VALUES (%s, %s)
+                    """,
+                    ("credential_added", f"id={cred_id}"),
+                )
 
+                return row["id"]
 
-def list_credentials(self) -> list[dict]:
-    try:
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT id, service, label, created_at, updated_at
-                FROM credentials
-                ORDER BY id ASC
-                """
-            ).fetchall()
+        except psycopg.Error as exc:
+            raise StorageError("Failed to add credential") from exc
 
-            return rows
+        except psycopg.Error as exc:
+            raise StorageError("Database error") from exc
 
-    except psycopg.Error as exc:
-        raise StorageError("Database error") from exc
+    def get_credential(self, cred_id: int) -> dict:
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT *
+                    FROM credentials
+                    WHERE id = %s
+                    """,
+                    (cred_id,),
+                ).fetchone()
 
+                if row is None:
+                    raise CredentialNotFoundError(f"Credential {cred_id} not found")
 
-def search_credentials(self, query: str) -> list[dict]:
-    try:
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT id, service, label, created_at, updated_at
-                FROM credentials
-                WHERE POSITION(LOWER(%s) IN LOWER(service)) > 0
-                   OR POSITION(LOWER(%s) IN LOWER(label)) > 0
-                ORDER BY id ASC
-                """,
-                (query, query),
-            ).fetchall()
+                return row
 
-            return rows
+        except psycopg.Error as exc:
+            raise StorageError("Database error") from exc
 
-    except psycopg.Error as exc:
-        raise StorageError("Database error") from exc
+    def list_credentials(self) -> list[dict]:
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT id, service, label, created_at, updated_at
+                    FROM credentials
+                    ORDER BY id ASC
+                    """
+                ).fetchall()
 
+                return rows
 
-def update_credential(
-    self,
-    cred_id: int,
-    service: str,
-    label: str,
-    nonce: bytes,
-    ciphertext: bytes,
-) -> None:
-    try:
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                UPDATE credentials
-                SET service = %s,
-                    label = %s,
-                    nonce = %s,
-                    ciphertext = %s,
-                    updated_at = now()
-                WHERE id = %s
-                RETURNING id
-                """,
-                (service, label, nonce, ciphertext, cred_id),
-            ).fetchone()
+        except psycopg.Error as exc:
+            raise StorageError("Database error") from exc
 
-            if row is None:
-                raise CredentialNotFoundError(f"Credential {cred_id} not found")
+    def search_credentials(self, query: str) -> list[dict]:
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT id, service, label, created_at, updated_at
+                    FROM credentials
+                    WHERE POSITION(LOWER(%s) IN LOWER(service)) > 0
+                    OR POSITION(LOWER(%s) IN LOWER(label)) > 0
+                    ORDER BY id ASC
+                    """,
+                    (query, query),
+                ).fetchall()
 
-            conn.execute(
-                """
-                INSERT INTO audit_log (event, detail)
-                VALUES (%s, %s)
-                """,
-                ("credential_updated", f"id={cred_id}"),
-            )
+                return rows
 
-    except psycopg.Error as exc:
-        raise StorageError("Database error") from exc
+        except psycopg.Error as exc:
+            raise StorageError("Database error") from exc
 
+    def update_credential(
+        self,
+        cred_id: int,
+        service: str,
+        label: str,
+        nonce: bytes,
+        ciphertext: bytes,
+    ) -> None:
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                        UPDATE credentials
+                        SET service = %s,
+                            label = %s,
+                            nonce = %s,
+                            ciphertext = %s,
+                            updated_at = now()
+                        WHERE id = %s
+                        RETURNING id
+                        """,
+                    (service, label, nonce, ciphertext, cred_id),
+                ).fetchone()
 
-def delete_credential(self, cred_id: int) -> None:
-    try:
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                DELETE FROM credentials
-                WHERE id = %s
-                RETURNING id
-                """,
-                (cred_id,),
-            ).fetchone()
+                if row is None:
+                    raise CredentialNotFoundError(f"Credential {cred_id} not found")
 
-            if row is None:
-                raise CredentialNotFoundError(f"Credential {cred_id} not found")
+                conn.execute(
+                    """
+                        INSERT INTO audit_log (event, detail)
+                        VALUES (%s, %s)
+                        """,
+                    ("credential_updated", f"id={cred_id}"),
+                )
 
-            conn.execute(
-                """
-                INSERT INTO audit_log (event, detail)
-                VALUES (%s, %s)
-                """,
-                ("credential_deleted", f"id={cred_id}"),
-            )
+        except psycopg.Error as exc:
+            raise StorageError("Database error") from exc
 
-    except psycopg.Error as exc:
-        raise StorageError("Database error") from exc
+    def delete_credential(self, cred_id: int) -> None:
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    DELETE FROM credentials
+                    WHERE id = %s
+                    RETURNING id
+                    """,
+                    (cred_id,),
+                ).fetchone()
 
+                if row is None:
+                    raise CredentialNotFoundError(f"Credential {cred_id} not found")
 
-def log_event(self, event: str, detail: str = "") -> None:
-    try:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO audit_log (event, detail)
-                VALUES (%s, %s)
-                """,
-                (event, detail),
-            )
+                conn.execute(
+                    """
+                    INSERT INTO audit_log (event, detail)
+                    VALUES (%s, %s)
+                    """,
+                    ("credential_deleted", f"id={cred_id}"),
+                )
 
-    except psycopg.Error as exc:
-        raise StorageError("Database error") from exc
+        except psycopg.Error as exc:
+            raise StorageError("Database error") from exc
 
+    def log_event(self, event: str, detail: str = "") -> None:
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO audit_log (event, detail)
+                    VALUES (%s, %s)
+                    """,
+                    (event, detail),
+                )
 
-def list_events(self, limit: int = 50) -> list[dict]:
-    try:
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT id, at, event, detail
-                FROM audit_log
-                ORDER BY id ASC
-                LIMIT %s
-                """,
-                (limit,),
-            ).fetchall()
+        except psycopg.Error as exc:
+            raise StorageError("Database error") from exc
 
-            return rows
+    def list_events(self, limit: int = 50) -> list[dict]:
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT id, at, event, detail
+                    FROM audit_log
+                    ORDER BY id ASC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                ).fetchall()
 
-    except psycopg.Error as exc:
-        raise StorageError("Database error") from exc
+                return rows
+
+        except psycopg.Error as exc:
+            raise StorageError("Database error") from exc
+
+    def reserve_credential_id(self) -> int:
+        try:
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                            SELECT nextval(
+                                pg_get_serial_sequence('credentials', 'id')
+                            ) AS id
+                        """)
+                    return cur.fetchone()["id"]
+
+        except psycopg.Error as exc:
+            raise StorageError("Failed to reserve credential ID") from exc
+
+    def sync_credential_sequence(self) -> None:
+        try:
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT setval(
+                            pg_get_serial_sequence('credentials', 'id'),
+                            COALESCE(
+                                (SELECT MAX(id) FROM credentials),
+                                1
+                            ),
+                            EXISTS(
+                                SELECT 1 FROM credentials
+                            )
+                        )
+                    """)
+
+        except psycopg.Error as exc:
+            raise StorageError("Failed to synchronize credential sequence") from exc
