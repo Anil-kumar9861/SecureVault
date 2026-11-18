@@ -317,6 +317,7 @@ class CredentialManager:
                     "id": cred_id,
                     "nonce": nonce,
                     "ciphertext": ciphertext,
+                    "updated_at": row["updated_at"],
                 }
             )
 
@@ -324,6 +325,7 @@ class CredentialManager:
         self.storage.change_master_transaction(
             updates,
             new_vault.export_meta(),
+            expected_salt=self.vault.meta.salt,
         )
 
         # Replace the current vault only after the database update succeeds.

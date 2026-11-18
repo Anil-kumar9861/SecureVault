@@ -12,10 +12,14 @@ from securevault.vault.crypto import (
     encrypt,
     generate_salt,
 )
-
+from securevault.vault.service import validate_master_password
 
 BACKUP_VERSION = 1
 BACKUP_AAD = b"securevault-backup-v1"
+MAX_BACKUP_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+MAX_BACKUP_TIME_COST = 5
+MAX_BACKUP_MEMORY_KIB = 262144  # 256 MB
+MAX_BACKUP_PARALLELISM = 8
 
 
 def create_backup(credentials: list[dict], backup_password: str) -> dict:
@@ -24,8 +28,7 @@ def create_backup(credentials: list[dict], backup_password: str) -> dict:
     if not isinstance(credentials, list):
         raise ValueError("Credentials must be a list")
 
-    if not isinstance(backup_password, str) or not backup_password.strip():
-        raise ValueError("Backup password cannot be empty")
+    validate_master_password(backup_password)
 
     # Create fresh salt and derive an encryption key.
     params = KdfParams()
@@ -61,6 +64,30 @@ def create_backup(credentials: list[dict], backup_password: str) -> dict:
     }
 
 
+def validate_backup_credentials(credentials: list) -> None:
+    """Validate the structure of imported backup credentials."""
+
+    if not isinstance(credentials, list):
+        raise ValueError("Invalid credentials data")
+
+    for item in credentials:
+        if not isinstance(item, dict):
+            raise ValueError("Invalid credential in backup")
+
+        if not isinstance(item.get("service"), str) or not item["service"].strip():
+            raise ValueError("Invalid service in backup")
+
+        if not isinstance(item.get("username"), str):
+            raise ValueError("Invalid username in backup")
+
+        if not isinstance(item.get("password"), str) or not item["password"]:
+            raise ValueError("Invalid password in backup")
+
+        for field in ("label", "url", "notes"):
+            if field in item and not isinstance(item[field], str):
+                raise ValueError(f"Invalid {field} in backup")
+
+
 def load_backup(backup_data: dict, backup_password: str) -> list[dict]:
     """Decrypt a backup and return its credential dictionaries."""
 
@@ -79,10 +106,21 @@ def load_backup(backup_data: dict, backup_password: str) -> list[dict]:
     try:
         params_data = backup_data["kdf_params"]
 
+        time_cost = params_data["time_cost"]
+        memory_kib = params_data["memory_kib"]
+        parallelism = params_data["parallelism"]
+
+        if (
+            time_cost > MAX_BACKUP_TIME_COST
+            or memory_kib > MAX_BACKUP_MEMORY_KIB
+            or parallelism > MAX_BACKUP_PARALLELISM
+        ):
+            raise ValueError("Backup KDF parameters exceed allowed limits")
+
         params = KdfParams(
-            time_cost=params_data["time_cost"],
-            memory_kib=params_data["memory_kib"],
-            parallelism=params_data["parallelism"],
+            time_cost=time_cost,
+            memory_kib=memory_kib,
+            parallelism=parallelism,
         )
 
         salt = base64.b64decode(backup_data["salt"], validate=True)
@@ -97,8 +135,9 @@ def load_backup(backup_data: dict, backup_password: str) -> list[dict]:
 
         credentials = payload["credentials"]
 
-        if not isinstance(credentials, list):
-            raise ValueError("Invalid credentials data")
+        credentials = payload["credentials"]
+
+        validate_backup_credentials(credentials)
 
         return credentials
 
@@ -157,6 +196,9 @@ def read_backup(file_path: str) -> dict:
 
     if not path.is_file():
         raise FileNotFoundError(f"Backup file not found: {file_path}")
+
+    if path.stat().st_size > MAX_BACKUP_FILE_SIZE:
+        raise ValueError("Backup file exceeds the maximum allowed size of 10 MB")
 
     try:
         with path.open("r", encoding="utf-8") as file:

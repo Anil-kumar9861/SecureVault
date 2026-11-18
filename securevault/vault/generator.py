@@ -1,3 +1,4 @@
+import math
 import secrets
 import string
 
@@ -26,3 +27,35 @@ def generate_password(length: int = 20) -> str:
     secrets.SystemRandom().shuffle(password)
 
     return "".join(password)
+
+
+def calculate_strength(password: str) -> str:
+    """Estimate password strength based on length and character variety."""
+
+    if not password:
+        return "Weak"
+
+    pool_size = 0
+
+    if any(char.islower() for char in password):
+        pool_size += 26
+
+    if any(char.isupper() for char in password):
+        pool_size += 26
+
+    if any(char.isdigit() for char in password):
+        pool_size += 10
+
+    if any(not char.isalnum() for char in password):
+        pool_size += 32
+
+    entropy = len(password) * math.log2(pool_size) if pool_size else 0
+
+    if entropy < 60:
+        return "Weak"
+    elif entropy < 80:
+        return "Medium"
+    elif entropy < 100:
+        return "Strong"
+    else:
+        return "Very Strong"

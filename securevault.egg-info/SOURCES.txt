@@ -13,6 +13,8 @@ securevault.egg-info/entry_points.txt
 securevault.egg-info/requires.txt
 securevault.egg-info/top_level.txt
 securevault/vault/__init__.py
+securevault/vault/backup.py
 securevault/vault/credentials.py
 securevault/vault/crypto.py
+securevault/vault/generator.py
 securevault/vault/service.py

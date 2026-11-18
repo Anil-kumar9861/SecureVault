@@ -1,8 +1,13 @@
+import csv
+import msvcrt
+from datetime import date
 from functools import wraps
+from pathlib import Path
 from typing import Optional
 
 import typer
 from rich.console import Console
+from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -23,16 +28,25 @@ from securevault.vault.backup import (
     save_backup,
 )
 from securevault.vault.credentials import CredentialManager
-from securevault.vault.generator import generate_password
+from securevault.vault.generator import calculate_strength, generate_password
 from securevault.vault.service import Vault, validate_master_password
-
 
 console = Console()
 error_console = Console(stderr=True)
 
 app = typer.Typer(help="SecureVault - encrypted password manager")
 vault_app = typer.Typer(help="Manage your password vault")
-
+VALID_HISTORY_EVENTS = {
+    "vault_created",
+    "credential_added",
+    "credential_updated",
+    "credential_deleted",
+    "credentials_imported",
+    "master_password_changed",
+    "unlock_failed",
+    "backup_exported",
+    "backup_imported",
+}
 app.add_typer(vault_app, name="vault")
 
 
@@ -56,6 +70,26 @@ def warn(message: str) -> None:
 
 def fail(message: str) -> None:
     error_console.print(safe_text(f"Error: {message}", "red"))
+
+
+def export_history_csv(events: list[dict], file_path: str) -> None:
+    """Export audit history to a CSV file."""
+
+    path = Path(file_path)
+
+    if path.exists():
+        raise FileExistsError(f"File already exists: {path}")
+    if not path.parent.exists():
+        raise FileNotFoundError(f"Destination folder does not exist: {path.parent}")
+
+    with path.open("w", newline="", encoding="utf-8-sig") as file:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=["id", "at", "event", "detail"],
+        )
+
+        writer.writeheader()
+        writer.writerows(events)
 
 
 def info_line(label: str, value) -> None:
@@ -139,6 +173,71 @@ def main(ctx: typer.Context) -> None:
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
+
+
+def prompt_password_with_strength(prompt: str) -> str:
+    """Prompt for a hidden password and display its live strength."""
+
+    password_chars = []
+
+    strength_colors = {
+        "Weak": "red",
+        "Medium": "yellow",
+        "Strong": "green",
+        "Very Strong": "cyan",
+    }
+
+    def get_display() -> Text:
+        password = "".join(password_chars)
+
+        output = Text()
+        output.append(f"{prompt}: ", style="bold")
+        output.append("•" * len(password_chars), style="white")
+
+        if password:
+            strength = calculate_strength(password)
+            output.append("   ")
+
+            output.append(
+                f"Strength: {strength}",
+                style=f"bold {strength_colors[strength]}",
+            )
+
+        return output
+
+    console.print()
+
+    with Live(
+        get_display(),
+        console=console,
+        refresh_per_second=10,
+        transient=False,
+    ) as live:
+        while True:
+            char = msvcrt.getwch()
+
+            if char in ("\r", "\n"):
+                break
+
+            if char == "\003":
+                raise KeyboardInterrupt
+
+            if char in ("\b", "\x7f"):
+                if password_chars:
+                    password_chars.pop()
+
+            elif char in ("\x00", "\xe0"):
+                # Ignore special keys such as arrows and function keys.
+                msvcrt.getwch()
+
+            else:
+                password_chars.append(char)
+
+            live.update(get_display())
+
+    console.print()
+
+    return "".join(password_chars)
 
 
 def handle_errors(func):
@@ -256,11 +355,17 @@ def init_vault() -> None:
     else:
         raise VaultAlreadyExistsError("Vault already exists")
 
-    master_password = typer.prompt(
-        "Create master password",
+    master_password = prompt_password_with_strength("Create master password")
+
+    validate_master_password(master_password)
+
+    confirm_password = typer.prompt(
+        "Confirm master password",
         hide_input=True,
-        confirmation_prompt=True,
     )
+
+    if master_password != confirm_password:
+        raise VaultError("Master passwords do not match")
 
     vault = Vault.create(master_password)
 
@@ -285,11 +390,15 @@ def add_credential(
     if username is None:
         username = typer.prompt("Username")
 
-    password = typer.prompt(
-        "Password",
+    password = prompt_password_with_strength("Create credential password")
+
+    confirm_password = typer.prompt(
+        "Confirm credential password",
         hide_input=True,
-        confirmation_prompt=True,
     )
+
+    if password != confirm_password:
+        raise VaultError("Passwords do not match")
 
     cred_id = manager.add(
         service=service,
@@ -457,10 +566,24 @@ def generate(
 
     password = generate_password(length)
 
+    strength = calculate_strength(password)
+
     output = Text("Generated password: ", style="green")
     output.append(password, style="bold white")
 
     console.print(output)
+
+    strength_colors = {
+        "Weak": "red",
+        "Medium": "yellow",
+        "Strong": "green",
+        "Very Strong": "cyan",
+    }
+
+    strength_output = Text("Password strength: ")
+    strength_output.append(strength, style=f"bold {strength_colors[strength]}")
+
+    console.print(strength_output)
 
 
 @vault_app.command("change-master")
@@ -626,6 +749,96 @@ def import_backup(file_path: str) -> None:
     console.print(f"Skipped: {result['skipped']}")
 
     success("Import completed.")
+
+
+@vault_app.command("history")
+@handle_errors
+def show_history(
+    limit: int = typer.Option(
+        50,
+        "--limit",
+        min=1,
+        help="Maximum number of audit events to display.",
+    ),
+    event: Optional[str] = typer.Option(
+        None,
+        "--event",
+        help="Filter history by event type.",
+    ),
+    export: Optional[str] = typer.Option(
+        None,
+        "--export",
+        help="Export audit history to a CSV file.",
+    ),
+    no_display: bool = typer.Option(
+        False,
+        "--no-display",
+        help="Export history without displaying it in the terminal.",
+    ),
+    since: Optional[date] = typer.Option(
+        None,
+        "--since",
+        help="Show events from this date onward (YYYY-MM-DD).",
+    ),
+    until: Optional[date] = typer.Option(
+        None,
+        "--until",
+        help="Show events up to this date (YYYY-MM-DD).",
+    ),
+) -> None:
+    """Display SecureVault audit history."""
+
+    if event is not None and event not in VALID_HISTORY_EVENTS:
+        fail(
+            f"Invalid event type: {event}. "
+            f"Available events: {', '.join(sorted(VALID_HISTORY_EVENTS))}"
+        )
+        return
+
+    # Authenticate the user before accessing audit history.
+    open_manager("Enter master password to access audit history")
+
+    events = Storage().list_events(
+        limit=limit,
+        event=event,
+        since=since,
+        until=until,
+    )
+
+    if not events:
+        warn("No audit history found.")
+        return
+
+    if export:
+        export_history_csv(events, export)
+        success(f"Audit history exported to: {export}")
+
+    if no_display:
+        return
+
+    table = Table(
+        title=Text("Audit History", style="bold #D98268"),
+        header_style="bold #D98268",
+        border_style="#D98268",
+        show_lines=True,
+        expand=True,
+    )
+
+    table.add_column("ID", justify="center", width=6)
+    table.add_column("Date")
+    table.add_column("Event")
+    table.add_column("Details")
+
+    for event in events:
+        table.add_row(
+            safe_text(event["id"]),
+            safe_text(event["at"]),
+            safe_text(event["event"]),
+            safe_text(event["detail"]),
+        )
+
+    console.print(table)
+    info_line("Events displayed", len(events))
 
 
 if __name__ == "__main__":
